@@ -29,8 +29,7 @@ try:
     requests_collection = db["requests"]
 
     # Confirm connectivity at startup
-    client.admin.command("ping")
-    print("✅ Connected to MongoDB Atlas!")
+    print("MongoDB client initialized. Connection will be tested via /health.")
 except Exception as e:
     print("❌ MongoDB connection error:")
     traceback.print_exc()
