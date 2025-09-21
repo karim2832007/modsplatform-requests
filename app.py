@@ -12,8 +12,9 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# Admin list (Discord IDs or usernames)
+# Roles
 ADMINS = ["1329817290052734980"]  # Your Discord ID
+MANAGERS = ["850344514605416468"]  # Manager ID
 
 # Build MongoDB URI and connect
 MONGO_URI = os.getenv("DATABASE_URL")
@@ -64,7 +65,8 @@ def create_request():
             "latestVersion": data.get("latestVersion", ""),
             "details": data.get("details", ""),
             "iconUrl": data.get("iconUrl", ""),
-            "createdBy": data.get("createdBy", "anonymous"),  # Track creator
+            "createdBy": data.get("createdBy", "anonymous"),
+            "comments": [],
             "timestamp": datetime.utcnow()
         }
         result = requests_collection.insert_one(new_request)
@@ -144,7 +146,6 @@ def delete_request(id):
         if not req:
             return jsonify({"error": "Request not found"}), 404
 
-        # Allow if creator or admin
         if req.get("createdBy") != current_user and current_user not in ADMINS:
             return jsonify({"error": "Not authorized to delete this request"}), 403
 
@@ -153,6 +154,47 @@ def delete_request(id):
 
     except Exception as e:
         print("❌ Error in DELETE /request/<id>:")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+# POST /request/<id>/comment → Add comment (creator, manager, or admin)
+@app.route("/request/<id>/comment", methods=["POST"])
+def add_comment(id):
+    try:
+        data = request.get_json(force=True)
+        current_user = data.get("currentUserId", "")
+        comment_text = data.get("comment", "").strip()
+
+        if not comment_text:
+            return jsonify({"error": "Comment cannot be empty"}), 400
+
+        req = requests_collection.find_one({"_id": ObjectId(id)})
+        if not req:
+            return jsonify({"error": "Request not found"}), 404
+
+        # Allow if creator, manager, or admin
+        if (
+            req.get("createdBy") != current_user
+            and current_user not in ADMINS
+            and current_user not in MANAGERS
+        ):
+            return jsonify({"error": "Not authorized to comment on this request"}), 403
+
+        comment_entry = {
+            "userId": current_user,
+            "comment": comment_text,
+            "timestamp": datetime.utcnow()
+        }
+
+        requests_collection.update_one(
+            {"_id": ObjectId(id)},
+            {"$push": {"comments": comment_entry}}
+        )
+
+        return jsonify({"message": "Comment added successfully"}), 200
+
+    except Exception as e:
+        print("❌ Error in POST /request/<id>/comment:")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
