@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
+from bson import ObjectId
 from datetime import datetime
 from dotenv import load_dotenv
 import os
@@ -11,7 +12,10 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# Build MongoDB URI and connect with explicit TLS & Server API version
+# Admin list (Discord IDs or usernames)
+ADMINS = ["1329817290052734980"]  # Your Discord ID
+
+# Build MongoDB URI and connect
 MONGO_URI = os.getenv("DATABASE_URL")
 if not MONGO_URI:
     raise RuntimeError("Missing DATABASE_URL environment variable")
@@ -28,19 +32,17 @@ try:
     db = client["modsplatform"]
     requests_collection = db["requests"]
 
-    # Confirm connectivity at startup
-    print("MongoDB client initialized. Connection will be tested via /health.")
-except Exception as e:
+    print("✅ MongoDB client initialized. Connection will be tested via /health.")
+except Exception:
     print("❌ MongoDB connection error:")
     traceback.print_exc()
-    # Let the app continue so /health can report status
 
-# Root route for quick browser check
+# Root route
 @app.route("/", methods=["GET"])
 def home():
     return "ModsPlatform backend is running!", 200
 
-# Health route to verify DB connectivity without inserting data
+# Health check
 @app.route("/health", methods=["GET"])
 def health():
     try:
@@ -49,7 +51,7 @@ def health():
     except Exception as e:
         return jsonify({"status": "error", "details": str(e)}), 500
 
-# POST /request → Save a new mod request
+# POST /request → Create new request
 @app.route("/request", methods=["POST"])
 def create_request():
     try:
@@ -62,29 +64,98 @@ def create_request():
             "latestVersion": data.get("latestVersion", ""),
             "details": data.get("details", ""),
             "iconUrl": data.get("iconUrl", ""),
+            "createdBy": data.get("createdBy", "anonymous"),  # Track creator
             "timestamp": datetime.utcnow()
         }
-        requests_collection.insert_one(new_request)
-        return jsonify({"message": "Request submitted successfully"}), 201
+        result = requests_collection.insert_one(new_request)
+        return jsonify({"message": "Request submitted successfully", "id": str(result.inserted_id)}), 201
 
     except Exception as e:
         print("❌ Error in /request:")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-# GET /requests → Return all stored requests
+# GET /requests → All requests
 @app.route("/requests", methods=["GET"])
 def get_requests():
     try:
-        all_requests = list(requests_collection.find({}, {"_id": 0}))
+        all_requests = []
+        for req in requests_collection.find():
+            req["_id"] = str(req["_id"])
+            all_requests.append(req)
         return jsonify(all_requests), 200
-
     except Exception as e:
         print("❌ Error in /requests:")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
+# GET /request/<id> → Single request details
+@app.route("/request/<id>", methods=["GET"])
+def get_request(id):
+    try:
+        req = requests_collection.find_one({"_id": ObjectId(id)})
+        if not req:
+            return jsonify({"error": "Request not found"}), 404
+        req["_id"] = str(req["_id"])
+        return jsonify(req), 200
+    except Exception as e:
+        print("❌ Error in GET /request/<id>:")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+# PUT /request/<id> → Edit request (only creator)
+@app.route("/request/<id>", methods=["PUT"])
+def update_request(id):
+    try:
+        data = request.get_json(force=True)
+        current_user = data.get("currentUserId", "")
+
+        req = requests_collection.find_one({"_id": ObjectId(id)})
+        if not req:
+            return jsonify({"error": "Request not found"}), 404
+
+        if req.get("createdBy") != current_user:
+            return jsonify({"error": "Not authorized to edit this request"}), 403
+
+        update_data = {
+            "gameName": data.get("gameName", req["gameName"]),
+            "latestVersion": data.get("latestVersion", req["latestVersion"]),
+            "details": data.get("details", req["details"]),
+            "iconUrl": data.get("iconUrl", req["iconUrl"]),
+            "timestamp": datetime.utcnow()
+        }
+
+        requests_collection.update_one({"_id": ObjectId(id)}, {"$set": update_data})
+        return jsonify({"message": "Request updated successfully"}), 200
+
+    except Exception as e:
+        print("❌ Error in PUT /request/<id>:")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+# DELETE /request/<id> → Remove request if creator or admin
+@app.route("/request/<id>", methods=["DELETE"])
+def delete_request(id):
+    try:
+        data = request.get_json(force=True)
+        current_user = data.get("currentUserId", "")
+
+        req = requests_collection.find_one({"_id": ObjectId(id)})
+        if not req:
+            return jsonify({"error": "Request not found"}), 404
+
+        # Allow if creator or admin
+        if req.get("createdBy") != current_user and current_user not in ADMINS:
+            return jsonify({"error": "Not authorized to delete this request"}), 403
+
+        requests_collection.delete_one({"_id": ObjectId(id)})
+        return jsonify({"message": "Request deleted successfully"}), 200
+
+    except Exception as e:
+        print("❌ Error in DELETE /request/<id>:")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == "__main__":
-    # When running locally, print that the server has started
     print("🚀 Starting Flask on http://0.0.0.0:5000")
     app.run(host="0.0.0.0", port=5000)
