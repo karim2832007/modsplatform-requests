@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, abort
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 from bson import ObjectId
@@ -14,19 +14,20 @@ load_dotenv()
 app = Flask(__name__)
 
 # Roles
-ADMINS = ["1329817290052734980"]  # Your Discord ID
-MANAGERS = ["850344514605416468"]  # Manager ID
+ADMINS    = ["1329817290052734980"]  # Your Discord ID
+MANAGERS  = ["850344514605416468"]   # Manager ID
 
-# Discord webhook
+# Discord webhook for notifications
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
 def send_discord_notification(message):
     """Send a message to Discord via webhook."""
-    if DISCORD_WEBHOOK_URL:
-        try:
-            pyrequests.post(DISCORD_WEBHOOK_URL, json={"content": message})
-        except Exception as e:
-            print("❌ Failed to send Discord notification:", e)
+    if not DISCORD_WEBHOOK_URL:
+        return
+    try:
+        pyrequests.post(DISCORD_WEBHOOK_URL, json={"content": message})
+    except Exception as e:
+        print("❌ Failed to send Discord notification:", e)
 
 # Build MongoDB URI and connect
 MONGO_URI = os.getenv("DATABASE_URL")
@@ -44,7 +45,6 @@ try:
     )
     db = client["modsplatform"]
     requests_collection = db["requests"]
-
     print("✅ MongoDB client initialized. Connection will be tested via /health.")
 except Exception:
     print("❌ MongoDB connection error:")
@@ -73,27 +73,30 @@ def create_request():
             return jsonify({"error": "gameName is required"}), 400
 
         new_request = {
-            "gameName": data["gameName"],
+            "gameName":    data["gameName"],
             "latestVersion": data.get("latestVersion", ""),
-            "details": data.get("details", ""),
-            "iconUrl": data.get("iconUrl", ""),
-            "createdBy": data.get("createdBy", "anonymous"),
-            "comments": [],
-            "timestamp": datetime.utcnow(),
-            "lastActivity": datetime.utcnow()
+            "details":       data.get("details", ""),
+            "iconUrl":       data.get("iconUrl", ""),
+            "createdBy":     data.get("createdBy", "anonymous"),
+            "comments":      [],
+            "timestamp":     datetime.utcnow(),
+            "lastActivity":  datetime.utcnow()
         }
         result = requests_collection.insert_one(new_request)
 
         # Notify creator, admins, and managers
         notify_ids = set([new_request["createdBy"]] + ADMINS + MANAGERS)
-        mention_str = " ".join([f"<@{uid}>" for uid in notify_ids])
+        mention_str = " ".join(f"<@{uid}>" for uid in notify_ids)
         send_discord_notification(
             f"🆕 New request added: **{new_request['gameName']}**\n"
             f"Details: {new_request['details']}\n"
             f"Notifying: {mention_str}"
         )
 
-        return jsonify({"message": "Request submitted successfully", "id": str(result.inserted_id)}), 201
+        return jsonify({
+            "message": "Request submitted successfully",
+            "id": str(result.inserted_id)
+        }), 201
 
     except Exception as e:
         print("❌ Error in /request:")
@@ -143,15 +146,18 @@ def update_request(id):
             return jsonify({"error": "Not authorized to edit this request"}), 403
 
         update_data = {
-            "gameName": data.get("gameName", req["gameName"]),
+            "gameName":     data.get("gameName", req["gameName"]),
             "latestVersion": data.get("latestVersion", req["latestVersion"]),
-            "details": data.get("details", req["details"]),
-            "iconUrl": data.get("iconUrl", req["iconUrl"]),
-            "timestamp": datetime.utcnow(),
-            "lastActivity": datetime.utcnow()
+            "details":       data.get("details", req["details"]),
+            "iconUrl":       data.get("iconUrl", req["iconUrl"]),
+            "timestamp":     datetime.utcnow(),
+            "lastActivity":  datetime.utcnow()
         }
 
-        requests_collection.update_one({"_id": ObjectId(id)}, {"$set": update_data})
+        requests_collection.update_one(
+            {"_id": ObjectId(id)},
+            {"$set": update_data}
+        )
         return jsonify({"message": "Request updated successfully"}), 200
 
     except Exception as e:
@@ -197,16 +203,14 @@ def add_comment(id):
             return jsonify({"error": "Request not found"}), 404
 
         # Allow if creator, manager, or admin
-        if (
-            req.get("createdBy") != current_user
-            and current_user not in ADMINS
-            and current_user not in MANAGERS
-        ):
-            return jsonify({"error": "Not authorized to comment on this request"}), 403
+        if (req.get("createdBy") != current_user
+                and current_user not in ADMINS
+                and current_user not in MANAGERS):
+            return jsonify({"error": "Not authorized to comment"}), 403
 
         comment_entry = {
-            "userId": current_user,
-            "comment": comment_text,
+            "userId":   current_user,
+            "comment":  comment_text,
             "timestamp": datetime.utcnow()
         }
 
@@ -214,13 +218,13 @@ def add_comment(id):
             {"_id": ObjectId(id)},
             {
                 "$push": {"comments": comment_entry},
-                "$set": {"lastActivity": datetime.utcnow()}
+                "$set":  {"lastActivity": datetime.utcnow()}
             }
         )
 
-        # Notify creator, admins, and managers
+        # Notify
         notify_ids = set([req["createdBy"]] + ADMINS + MANAGERS)
-        mention_str = " ".join([f"<@{uid}>" for uid in notify_ids])
+        mention_str = " ".join(f"<@{uid}>" for uid in notify_ids)
         send_discord_notification(
             f"💬 New comment on **{req['gameName']}** by <@{current_user}>: {comment_text}\n"
             f"Notifying: {mention_str}"
@@ -245,4 +249,36 @@ def delete_comment(id, index):
             return jsonify({"error": "Request not found"}), 404
 
         comments = req.get("comments", [])
-        if index < 0 or index >=
+        # Syntax fixed: compare with length of comments
+        if index < 0 or index >= len(comments):
+            return jsonify({"error": "Comment index out of bounds"}), 400
+
+        comment = comments[index]
+        owner = comment.get("userId", "")
+
+        # Only owner or admin can delete
+        if owner != current_user and current_user not in ADMINS:
+            return jsonify({"error": "Not authorized to delete this comment"}), 403
+
+        # Pull that exact comment object and update lastActivity
+        requests_collection.update_one(
+            {"_id": ObjectId(id)},
+            {
+                "$pull": {"comments": comment},
+                "$set":  {"lastActivity": datetime.utcnow()}
+            }
+        )
+
+        send_discord_notification(
+            f"🗑️ Comment deleted on **{req['gameName']}** by <@{current_user}>"
+        )
+
+        return jsonify({"message": "Comment deleted successfully"}), 200
+
+    except Exception as e:
+        print("❌ Error in DELETE /request/<id>/comment/<index>:")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
