@@ -73,7 +73,7 @@ def create_request():
             return jsonify({"error": "gameName is required"}), 400
 
         new_request = {
-            "gameName":    data["gameName"],
+            "gameName":      data["gameName"],
             "latestVersion": data.get("latestVersion", ""),
             "details":       data.get("details", ""),
             "iconUrl":       data.get("iconUrl", ""),
@@ -108,7 +108,8 @@ def create_request():
 def get_requests():
     try:
         all_requests = []
-        for req in requests_collection.find().sort("lastActivity", -1):
+        cursor = requests_collection.find().sort("lastActivity", -1)
+        for req in cursor:
             req["_id"] = str(req["_id"])
             all_requests.append(req)
         return jsonify(all_requests), 200
@@ -146,7 +147,7 @@ def update_request(id):
             return jsonify({"error": "Not authorized to edit this request"}), 403
 
         update_data = {
-            "gameName":     data.get("gameName", req["gameName"]),
+            "gameName":      data.get("gameName", req["gameName"]),
             "latestVersion": data.get("latestVersion", req["latestVersion"]),
             "details":       data.get("details", req["details"]),
             "iconUrl":       data.get("iconUrl", req["iconUrl"]),
@@ -202,15 +203,14 @@ def add_comment(id):
         if not req:
             return jsonify({"error": "Request not found"}), 404
 
-        # Allow if creator, manager, or admin
         if (req.get("createdBy") != current_user
                 and current_user not in ADMINS
                 and current_user not in MANAGERS):
             return jsonify({"error": "Not authorized to comment"}), 403
 
         comment_entry = {
-            "userId":   current_user,
-            "comment":  comment_text,
+            "userId":    current_user,
+            "comment":   comment_text,
             "timestamp": datetime.utcnow()
         }
 
@@ -222,7 +222,6 @@ def add_comment(id):
             }
         )
 
-        # Notify
         notify_ids = set([req["createdBy"]] + ADMINS + MANAGERS)
         mention_str = " ".join(f"<@{uid}>" for uid in notify_ids)
         send_discord_notification(
@@ -249,18 +248,16 @@ def delete_comment(id, index):
             return jsonify({"error": "Request not found"}), 404
 
         comments = req.get("comments", [])
-        # Syntax fixed: compare with length of comments
+        # FIXED: compare against length of comments
         if index < 0 or index >= len(comments):
             return jsonify({"error": "Comment index out of bounds"}), 400
 
         comment = comments[index]
         owner = comment.get("userId", "")
 
-        # Only owner or admin can delete
         if owner != current_user and current_user not in ADMINS:
             return jsonify({"error": "Not authorized to delete this comment"}), 403
 
-        # Pull that exact comment object and update lastActivity
         requests_collection.update_one(
             {"_id": ObjectId(id)},
             {
