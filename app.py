@@ -233,6 +233,16 @@ def add_comment(id):
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-if __name__ == "__main__":
-    print("🚀 Starting Flask on http://0.0.0.0:5000")
-    app.run(host="0.0.0.0", port=5000)
+# DELETE /request/<id>/comment/<index> → Remove comment if owner or admin
+@app.route("/request/<id>/comment/<int:index>", methods=["DELETE"])
+def delete_comment(id, index):
+    try:
+        data = request.get_json(force=True)
+        current_user = data.get("currentUserId", "")
+
+        req = requests_collection.find_one({"_id": ObjectId(id)})
+        if not req:
+            return jsonify({"error": "Request not found"}), 404
+
+        comments = req.get("comments", [])
+        if index < 0 or index >=
