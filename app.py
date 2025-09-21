@@ -6,6 +6,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 import os
 import traceback
+import requests as pyrequests  # for Discord notifications
 
 # Load environment variables from .env
 load_dotenv()
@@ -15,6 +16,17 @@ app = Flask(__name__)
 # Roles
 ADMINS = ["1329817290052734980"]  # Your Discord ID
 MANAGERS = ["850344514605416468"]  # Manager ID
+
+# Discord webhook
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+
+def send_discord_notification(message):
+    """Send a message to Discord via webhook."""
+    if DISCORD_WEBHOOK_URL:
+        try:
+            pyrequests.post(DISCORD_WEBHOOK_URL, json={"content": message})
+        except Exception as e:
+            print("❌ Failed to send Discord notification:", e)
 
 # Build MongoDB URI and connect
 MONGO_URI = os.getenv("DATABASE_URL")
@@ -67,9 +79,20 @@ def create_request():
             "iconUrl": data.get("iconUrl", ""),
             "createdBy": data.get("createdBy", "anonymous"),
             "comments": [],
-            "timestamp": datetime.utcnow()
+            "timestamp": datetime.utcnow(),
+            "lastActivity": datetime.utcnow()
         }
         result = requests_collection.insert_one(new_request)
+
+        # Notify creator, admins, and managers
+        notify_ids = set([new_request["createdBy"]] + ADMINS + MANAGERS)
+        mention_str = " ".join([f"<@{uid}>" for uid in notify_ids])
+        send_discord_notification(
+            f"🆕 New request added: **{new_request['gameName']}**\n"
+            f"Details: {new_request['details']}\n"
+            f"Notifying: {mention_str}"
+        )
+
         return jsonify({"message": "Request submitted successfully", "id": str(result.inserted_id)}), 201
 
     except Exception as e:
@@ -77,12 +100,12 @@ def create_request():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-# GET /requests → All requests
+# GET /requests → All requests, newest activity first
 @app.route("/requests", methods=["GET"])
 def get_requests():
     try:
         all_requests = []
-        for req in requests_collection.find():
+        for req in requests_collection.find().sort("lastActivity", -1):
             req["_id"] = str(req["_id"])
             all_requests.append(req)
         return jsonify(all_requests), 200
@@ -124,7 +147,8 @@ def update_request(id):
             "latestVersion": data.get("latestVersion", req["latestVersion"]),
             "details": data.get("details", req["details"]),
             "iconUrl": data.get("iconUrl", req["iconUrl"]),
-            "timestamp": datetime.utcnow()
+            "timestamp": datetime.utcnow(),
+            "lastActivity": datetime.utcnow()
         }
 
         requests_collection.update_one({"_id": ObjectId(id)}, {"$set": update_data})
@@ -188,7 +212,18 @@ def add_comment(id):
 
         requests_collection.update_one(
             {"_id": ObjectId(id)},
-            {"$push": {"comments": comment_entry}}
+            {
+                "$push": {"comments": comment_entry},
+                "$set": {"lastActivity": datetime.utcnow()}
+            }
+        )
+
+        # Notify creator, admins, and managers
+        notify_ids = set([req["createdBy"]] + ADMINS + MANAGERS)
+        mention_str = " ".join([f"<@{uid}>" for uid in notify_ids])
+        send_discord_notification(
+            f"💬 New comment on **{req['gameName']}** by <@{current_user}>: {comment_text}\n"
+            f"Notifying: {mention_str}"
         )
 
         return jsonify({"message": "Comment added successfully"}), 200
